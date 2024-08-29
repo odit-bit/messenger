@@ -46,15 +46,15 @@ func NewRabbit(uri string) *rabbitClient {
 	conn, err := amqp.Dial(uri)
 	panicOnError(err, "failed to dial server")
 
-	ch, err := conn.Channel()
-	panicOnError(err, "failed set channel")
-
 	e := &rabbitClient{
 		conn:         conn,
 		exchangeName: _ExhchangeDefault,
 	}
+	ch, err := conn.Channel()
+	panicOnError(err, "failed get channel")
 
-	declareLogExchange(ch, e.exchangeName)
+	logMigrate(ch, e.exchangeName)
+	ch.Close()
 	return e
 
 }
@@ -69,64 +69,53 @@ func (e *rabbitClient) Publisher() publisher {
 	ch, err := e.conn.Channel()
 	panicOnError(err, "emitter failed set channel")
 
-	declareLogExchange(ch, e.exchangeName)
-
-	// the method's channel will close this
-	err = ch.Confirm(false)
-	panicOnError(err, "emitter failed set confirmation")
-
-	notifC := make(chan amqp.Return, 1)
-	confirmation := ch.NotifyReturn(notifC)
-
-	go func() {
-		for r := range confirmation {
-			fmt.Printf("log publish, time: %v\n", r.Timestamp)
-		}
-	}()
-
 	return publisher{
 		cli: e,
 		ch:  ch,
 	}
 }
 
-func (e *rabbitClient) Consume(keyRoutes ...string) <-chan []byte {
+func (e *rabbitClient) Consumer(queue string) <-chan amqp.Delivery {
+	var err error
 	ch, err := e.conn.Channel()
 	panicOnError(err, "failed set channel")
-
-	declareLogExchange(ch, e.exchangeName)
-
-	q, err := ch.QueueDeclare(_QueueDefault, false, false, false, false, nil)
-	panicOnError(err, "failed declare")
 
 	err = ch.Qos(
 		1,     // prefetch count
 		0,     // prefetch size
 		false, // global
 	)
-	panicOnError(err, "")
+	panicOnError(err, "set Qos")
 
-	//!!binding the exchange
-	for _, key := range keyRoutes {
-		err = ch.QueueBind(q.Name, key, e.exchangeName, false, nil)
-		panicOnError(err, "failed bind")
-		fmt.Printf("binding to exchange %s, with key %s \n", e.exchangeName, key)
-	}
-
-	msgC, err := ch.Consume(q.Name, "", false, false, false, false, nil)
+	msgC, err := ch.Consume(queue, "", false, false, false, false, nil)
 	panicOnError(err, "failed consume channel")
 
-	inC := make(chan []byte)
-	go func() {
-		defer close(inC)
-		for d := range msgC {
-			inC <- d.Body
-			d.Ack(false)
+	return msgC
 
-		}
-	}()
+}
 
-	return inC
+func logMigrate(ch *amqp.Channel, exchange string) {
+	migrate(ch, exchange,
+		slog.LevelInfo.String(),
+		slog.LevelError.String(),
+		slog.LevelDebug.String(),
+		slog.LevelWarn.String(),
+	)
+}
+
+func migrate(ch *amqp.Channel, exchange string, routes ...string) {
+	declareLogExchange(ch, exchange)
+
+	//!!binding the exchange
+	for _, key := range routes {
+		q, err := ch.QueueDeclare(key, true, false, false, false, nil)
+		panicOnError(err, "declare queue")
+
+		err = ch.QueueBind(q.Name, key, exchange, false, nil)
+		panicOnError(err, "failed bind")
+		fmt.Printf("binding queue [%s] to exchange [%s], with key [%s] \n", q.Name, exchange, key)
+	}
+
 }
 
 // Publisher

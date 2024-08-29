@@ -91,13 +91,13 @@ func (h *JSONHandler) Handle(ctx context.Context, rec slog.Record) error {
 
 	var err error
 
-	state := jsonBuilder{
-		buf: &bytes.Buffer{},
-	}
+	state := getJsonBuilder()
+	defer state.free()
 	state.buf.WriteByte('{')
 	// TIME
 	if !rec.Time.IsZero() {
-		state.appendTime(slog.Time(slog.TimeKey, rec.Time))
+		state.appendKey(slog.TimeKey)
+		state.appendTime(rec.Time.Round(0))
 	}
 
 	// LEVEL
@@ -138,14 +138,14 @@ func (h *JSONHandler) Handle(ctx context.Context, rec slog.Record) error {
 		return true
 	})
 
+	state.buf.WriteByte('}')
+	state.buf.WriteByte('\n')
+
 	// publish
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	state.buf.WriteByte('}')
-	state.buf.WriteByte('\n')
-
-	msg := state.buf.Bytes()
+	msg := *state.buf
 	keyRoute := rec.Level.String()
 	if h.e != nil {
 		if err := h.e.Publish(ctx, msg, keyRoute); err != nil {
@@ -161,7 +161,17 @@ func (h *JSONHandler) Handle(ctx context.Context, rec slog.Record) error {
 }
 
 type jsonBuilder struct {
-	buf *bytes.Buffer
+	buf *bpool.B
+}
+
+func getJsonBuilder() jsonBuilder {
+	return jsonBuilder{
+		buf: bpool.New(),
+	}
+}
+
+func (jb *jsonBuilder) free() {
+	jb.buf.Free()
 }
 
 func (jb *jsonBuilder) appendAttr(a slog.Attr) {
@@ -177,9 +187,6 @@ func (jb *jsonBuilder) appendAttr(a slog.Attr) {
 	jb.appendKey(a.Key)
 
 	//VALUE
-	val := bpool.New()
-	defer val.Free()
-	val.Reset()
 	switch a.Value.Kind() {
 
 	case slog.KindString:
@@ -188,13 +195,17 @@ func (jb *jsonBuilder) appendAttr(a slog.Attr) {
 
 	case slog.KindTime:
 		// jb.buf.WriteString(fmt.Sprintf("%q:%q", a.Key, a.Value.Time().Format(time.RFC3339Nano)))
-		*val = a.Value.Time().AppendFormat(*val, time.RFC3339Nano)
+		jb.appendTime(a.Value.Time())
 
 	case slog.KindInt64:
-		*val = strconv.AppendInt(*val, a.Value.Int64(), 10)
+		*jb.buf = strconv.AppendInt(*jb.buf, a.Value.Int64(), 10)
 
 	case slog.KindBool:
-		*val = strconv.AppendBool(*val, a.Value.Bool())
+		*jb.buf = strconv.AppendBool(*jb.buf, a.Value.Bool())
+
+	case slog.KindDuration:
+		// Do what json.Marshal does.
+		*jb.buf = strconv.AppendInt(*jb.buf, int64(a.Value.Duration()), 10)
 
 	case slog.KindAny:
 		e := a.Value.Any()
@@ -207,14 +218,13 @@ func (jb *jsonBuilder) appendAttr(a slog.Attr) {
 
 	default:
 		fmt.Printf("unimplemented kind: %v \n", a.Value.Kind())
-
 	}
-	jb.buf.Write(*val)
 }
 
-func (jb *jsonBuilder) appendTime(a slog.Attr) {
-	jb.appendKey(a.Key)
-	jb.appendString(a.Value.Time().Format(time.RFC3339Nano))
+func (jb *jsonBuilder) appendTime(a time.Time) {
+	jb.buf.WriteByte('"')
+	*jb.buf = a.AppendFormat(*jb.buf, time.RFC3339Nano)
+	jb.buf.WriteByte('"')
 }
 
 func (jb *jsonBuilder) appendKey(key string) {

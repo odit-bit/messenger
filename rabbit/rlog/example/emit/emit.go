@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -22,6 +23,7 @@ func main() {
 	h := rlog.NewJSONHandler(&pub, slog.HandlerOptions{
 		Level: slog.LevelDebug,
 	})
+	// h.WithWriter(os.Stdout)
 	logger := slog.New(h)
 	logger2 := logger.With("start", time.Now())
 
@@ -54,11 +56,11 @@ func main() {
 			continue
 		case <-sigC:
 			ticker.Stop()
-			logger2.Info("shutdown")
+			logger2.Info("shutdown", "total", count)
 		}
 		break
 	}
-
+	fmt.Println("total:", count)
 	close(sigC)
 
 	/// TEST
