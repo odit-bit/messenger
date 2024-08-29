@@ -99,18 +99,15 @@ func (h *JSONHandler) Handle(ctx context.Context, rec slog.Record) error {
 	if !rec.Time.IsZero() {
 		state.appendTime(slog.Time(slog.TimeKey, rec.Time))
 	}
-	// state.buf.WriteByte(',')
 
 	// LEVEL
 	state.appendAttr(slog.String(slog.LevelKey, rec.Level.String()))
-	// state.buf.WriteByte(',')
 
 	// SOURCE
 	if rec.PC != 0 {
 		fs := runtime.CallersFrames([]uintptr{rec.PC})
 		f, _ := fs.Next()
 		state.appendAttr(slog.String(slog.SourceKey, fmt.Sprintf("%s:%d", f.File, f.Line)))
-		// state.buf.WriteByte(',')
 	}
 
 	// MESSAGE
